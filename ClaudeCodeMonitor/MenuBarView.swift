@@ -1,0 +1,365 @@
+import SwiftUI
+
+struct SessionDropDelegate: DropDelegate {
+    let sessions: [Session]
+    let currentIndex: Int
+    let sessionMonitor: SessionMonitor
+    
+    func performDrop(info: DropInfo) -> Bool {
+        guard let itemProvider = info.itemProviders(for: [.plainText]).first else { return false }
+        
+        itemProvider.loadItem(forTypeIdentifier: "public.plain-text", options: nil) { (data, error) in
+            guard let data = data as? Data,
+                  let string = String(data: data, encoding: .utf8),
+                  let sourceIndex = Int(string) else { return }
+            
+            guard sourceIndex != currentIndex else { return }
+            
+            DispatchQueue.main.async {
+                let sourceIndexSet = IndexSet(integer: sourceIndex)
+                let destinationIndex = currentIndex > sourceIndex ? currentIndex + 1 : currentIndex
+                sessionMonitor.moveSession(from: sourceIndexSet, to: destinationIndex)
+            }
+        }
+        
+        return true
+    }
+}
+
+struct MenuBarView: View {
+    @ObservedObject var sessionMonitor: SessionMonitor
+    @ObservedObject var preferencesManager = PreferencesManager.shared
+    @State private var showingPreferences = false
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            headerView
+                .padding()
+                .background(Color(NSColor.controlBackgroundColor))
+            
+            Divider()
+            
+            if sessionMonitor.sessions.isEmpty {
+                emptyStateView
+            } else {
+                sessionListView
+            }
+            
+            Divider()
+            
+            footerView
+                .padding()
+                .background(Color(NSColor.controlBackgroundColor))
+        }
+        .frame(width: 500, height: preferencesManager.windowHeight)
+        .sheet(isPresented: $showingPreferences) {
+            PreferencesView(onDismiss: {
+                showingPreferences = false
+            })
+                .frame(width: 450, height: 420)
+        }
+    }
+    
+    private var headerView: some View {
+        let workingCount = sessionMonitor.sessions.filter { $0.isWorking }.count
+        let waitingCount = sessionMonitor.sessions.filter { !$0.isWorking }.count
+        let totalCount = sessionMonitor.sessions.count
+        
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Claude Code sessions")
+                .font(.title2)
+                .fontWeight(.semibold)
+            
+            HStack(spacing: 20) {
+                StatView(
+                    label: "Total",
+                    value: "\(totalCount)",
+                    color: .primary,
+                    showCircle: false
+                )
+                
+                Divider()
+                    .frame(height: 30)
+                
+                StatView(
+                    label: "Working",
+                    value: "\(workingCount)",
+                    color: .blue,
+                    showCircle: true
+                )
+                
+                StatView(
+                    label: "Waiting",
+                    value: "\(waitingCount)",
+                    color: .orange,
+                    showCircle: true
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    
+    private var sessionListView: some View {
+        ScrollView {
+            LazyVStack(spacing: 8) {
+                ForEach(Array(sessionMonitor.sessions.enumerated()), id: \.element.id) { index, session in
+                    HStack(spacing: 8) {
+                        // Drag handle
+                        Image(systemName: "line.3.horizontal")
+                            .font(.title3)
+                            .foregroundColor(.secondary)
+                            .frame(width: 30)
+                            .padding(.vertical, 4)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(Color.gray.opacity(0.1))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                            )
+                            .onDrag {
+                                NSItemProvider(object: String(index) as NSString)
+                            }
+                        
+                        SessionRowView(session: session, sessionMonitor: sessionMonitor) {
+                            sessionMonitor.focusTerminalWindow(for: session)
+                        }
+                    }
+                    .onDrop(of: [.plainText], delegate: SessionDropDelegate(
+                        sessions: sessionMonitor.sessions,
+                        currentIndex: index,
+                        sessionMonitor: sessionMonitor
+                    ))
+                }
+            }
+            .padding()
+        }
+    }
+    
+    private var emptyStateView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "terminal")
+                .font(.system(size: 48))
+                .foregroundColor(.secondary)
+            
+            Text("No Claude Code sessions detected")
+                .font(.headline)
+                .foregroundColor(.secondary)
+            
+            Text("Start a claude-code session in Terminal to see it here")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+    
+    private var footerView: some View {
+        HStack {
+            Button("Preferences") {
+                showingPreferences = true
+            }
+            .buttonStyle(.plain)
+            
+            Spacer()
+            
+            Button("Quit") {
+                NSApplication.shared.terminate(nil)
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.red)
+        }
+    }
+}
+
+struct StatView: View {
+    let label: String
+    let value: String
+    let color: Color
+    var showCircle: Bool = false
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                if showCircle {
+                    Circle()
+                        .fill(color)
+                        .frame(width: 8, height: 8)
+                }
+                Text(label)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
+            Text(value)
+                .font(.title3)
+                .fontWeight(.semibold)
+                .foregroundColor(color)
+        }
+    }
+}
+
+struct SessionRowView: View {
+    let session: Session
+    let sessionMonitor: SessionMonitor
+    let onTap: () -> Void
+    
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 12) {
+                statusIndicator
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(session.projectName ?? "Unknown Project")
+                                .font(.system(.body))
+                                .fontWeight(.medium)
+                                .help(session.workingDirectory ?? "Working directory unknown")
+                            
+                            HStack(spacing: 28) {
+                                Text("PID: \(String(session.processID))")
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .help("Process ID: \(session.processID)\nTerminal: \(session.terminalAppName ?? "Unknown")")
+                                
+                                if session.compactionPercentage > 0 {
+                                    Label("\(Int(session.compactionPercentage))% to auto-compact", systemImage: "archivebox")
+                                        .font(.system(.caption, weight: session.compactionPercentage <= 10 ? .bold : .regular))
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                        
+                        Spacer()
+                        
+                        Text(session.statusDescription)
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(statusBackgroundColor)
+                            .foregroundColor(statusForegroundColor)
+                            .cornerRadius(4)
+                            .help(session.isWorking ? "Claude is currently processing" : (session.hasOutput ? "Claude has output waiting for your input" : "Claude is idle"))
+                    }
+                    
+                    Button(action: {
+                        sessionMonitor.refreshTokenData(for: session)
+                    }) {
+                        HStack(alignment: .center, spacing: 16) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "iphone.and.arrow.right.inward")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text("\(session.inputTokens)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            HStack(spacing: 4) {
+                                Image(systemName: "iphone.and.arrow.right.outward")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text("\(session.outputTokens)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Label(session.formattedCost, systemImage: "dollarsign.circle")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            
+                            Spacer()
+                            
+                            HStack(spacing: 8) {
+                                if let timeAgo = session.timeSinceTokenRefresh {
+                                    Text(timeAgo)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary.opacity(0.7))
+                                } else {
+                                    Text("fetch")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary.opacity(0.7))
+                                }
+
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .rotationEffect(.degrees(session.isRefreshingTokens ? 360 : 0))
+                                    .animation(session.isRefreshingTokens ? 
+                                        .linear(duration: 0.333).repeatForever(autoreverses: false) : 
+                                        .default, value: session.isRefreshingTokens)
+                            }
+                        }
+                        .padding(8)
+                        .frame(maxWidth: .infinity)
+                        .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+                        .cornerRadius(6)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(session.isRefreshingTokens)
+                    .help("Click to refresh usage metrics")
+                }
+                
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(NSColor.controlBackgroundColor))
+            .cornerRadius(8)
+        }
+        .buttonStyle(.plain)
+    }
+    
+    private var statusIndicator: some View {
+        Circle()
+            .fill(statusIndicatorColor)
+            .frame(width: 8, height: 8)
+            .overlay(
+                Circle()
+                    .fill(statusIndicatorColor.opacity(0.3))
+                    .frame(width: 16, height: 16)
+                    .opacity(session.isWorking ? 1 : 0)
+                    .animation(.easeInOut(duration: 1).repeatForever(autoreverses: true), value: session.isWorking)
+            )
+    }
+    
+    private var statusIndicatorColor: Color {
+        if session.isWorking {
+            return .blue
+        } else if session.hasOutput {
+            return .orange
+        } else {
+            return .gray
+        }
+    }
+    
+    private var statusBackgroundColor: Color {
+        if session.isWorking {
+            return .blue.opacity(0.1)
+        } else if session.hasOutput {
+            return .orange.opacity(0.1)
+        } else {
+            return .gray.opacity(0.1)
+        }
+    }
+    
+    private var statusForegroundColor: Color {
+        if session.isWorking {
+            return .blue
+        } else if session.hasOutput {
+            return .orange
+        } else {
+            return .gray
+        }
+    }
+}
