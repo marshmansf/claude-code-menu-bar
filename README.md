@@ -47,9 +47,18 @@ The token usage and cost tracking has not been vetted and may not be correct yet
 4. Build and run (⌘+R)
 
 ### Option 2: Download Release
-1. Download the latest `.app` from [Releases](https://github.com/marshmansf/claude-code-menu-bar/releases)
-2. Move to Applications folder
-3. Right-click and select "Open" (first time only, due to Gatekeeper)
+
+1. Download the latest release from [Releases](https://github.com/marshmansf/claude-code-menu-bar/releases)
+2. Unzip the file
+3. Move `ClaudeCodeMonitor.app` to your Applications folder
+4. **Important**: Since the app isn't code-signed, you need to remove the quarantine attribute:
+   - Open Terminal
+   - Run: `xattr -cr /Applications/ClaudeCodeMonitor.app`
+5. Right-click `ClaudeCodeMonitor.app` and select "Open"
+6. Click "Open" in the security dialog
+7. The app will now run normally
+
+**Note**: Steps 4-6 are only needed on first launch. The app is safe and open-source, but macOS requires these steps for apps without an Apple Developer certificate.
 
 ## Usage
 
