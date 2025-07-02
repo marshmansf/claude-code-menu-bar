@@ -8,14 +8,22 @@ struct ClaudeProcess {
     let commandLine: String
     let cpuUsage: Double
     let memoryUsage: Int64
+    let workingDirectory: String?
 }
 
 class ProcessDetector {
     static let shared = ProcessDetector()
+    private var workingDirectoryCache: [Int32: String] = [:]
+    private var cacheTimestamp: Date?
     
     func getAllClaudeProcesses() -> [ClaudeProcess] {
         var processes: [ClaudeProcess] = []
         
+        // Clear cache if it's older than 5 seconds
+        if let timestamp = cacheTimestamp, Date().timeIntervalSince(timestamp) > 5 {
+            workingDirectoryCache.removeAll()
+            cacheTimestamp = nil
+        }
         
         // Try a simpler approach first
         let task = Process()
@@ -74,6 +82,9 @@ class ProcessDetector {
                                     // Parse start time (format could be like "9:23AM" or "Dec19")
                                     let startTime = parseProcessStartTime(startTimeStr)
                                     
+                                    // Get working directory for this process (using cache)
+                                    let workingDir = getCachedWorkingDirectory(for: pid)
+                                    
                                     // Create ClaudeProcess manually since we have different format
                                     let process = ClaudeProcess(
                                         pid: pid,
@@ -81,7 +92,8 @@ class ProcessDetector {
                                         terminalWindow: tty,
                                         commandLine: "claude",
                                         cpuUsage: 0.0,
-                                        memoryUsage: 0
+                                        memoryUsage: 0,
+                                        workingDirectory: workingDir
                                     )
                                     processes.append(process)
                                 }
@@ -121,13 +133,17 @@ class ProcessDetector {
         // For now, use current time as start time (we'd need more complex parsing for actual start time)
         let startTime = Date()
         
+        // Get working directory for this process (using cache)
+        let workingDirectory = getCachedWorkingDirectory(for: pid)
+        
         return ClaudeProcess(
             pid: pid,
             startTime: startTime,
             terminalWindow: terminalWindow,
             commandLine: commandLine,
             cpuUsage: cpuUsage,
-            memoryUsage: memoryKB * 1024 // Convert to bytes
+            memoryUsage: memoryKB * 1024, // Convert to bytes
+            workingDirectory: workingDirectory
         )
     }
     
@@ -160,6 +176,58 @@ class ProcessDetector {
             }
         } catch {
             // Silent fail - terminal detection is optional
+        }
+        
+        return nil
+    }
+    
+    private func getCachedWorkingDirectory(for pid: Int32) -> String? {
+        // Check cache first
+        if let cached = workingDirectoryCache[pid] {
+            return cached
+        }
+        
+        // Get fresh value
+        if let workingDir = getWorkingDirectory(for: pid) {
+            workingDirectoryCache[pid] = workingDir
+            if cacheTimestamp == nil {
+                cacheTimestamp = Date()
+            }
+            return workingDir
+        }
+        
+        return nil
+    }
+    
+    func getWorkingDirectory(for pid: Int32) -> String? {
+        // Use lsof to get the current working directory of the process
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        task.arguments = ["-p", String(pid), "-a", "-d", "cwd", "-F", "n"]
+        
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+        
+        do {
+            try task.run()
+            task.waitUntilExit()
+            
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8) {
+                // lsof -F n output format: lines starting with 'n' contain the name/path
+                let lines = output.components(separatedBy: "\n")
+                for line in lines {
+                    if line.hasPrefix("n") && line.count > 1 {
+                        let path = String(line.dropFirst()) // Remove the 'n' prefix
+                        if path != "/" && !path.isEmpty { // Skip root and empty paths
+                            return path
+                        }
+                    }
+                }
+            }
+        } catch {
+            // Silent fail - working directory detection is optional
         }
         
         return nil

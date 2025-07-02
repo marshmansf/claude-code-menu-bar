@@ -3,93 +3,125 @@ import AppKit
 
 class SessionMonitor: ObservableObject {
     @Published var sessions: [Session] = []
+    @Published var isInitialLoadComplete = false
     var onSessionsChanged: (() -> Void)?
     private var sessionOrder: [Int32] = []  // Track PID order
     
-    private var timer: Timer?
-    private let updateInterval: TimeInterval = 2.0
     private let fileParser = ClaudeFileParser.shared
     private let processDetector = ProcessDetector.shared
     private let terminalParser = TerminalContentParser.shared
-    private var lastTokenCounts: [Int32: (input: Int, output: Int)] = [:]
-    private var updateCount = 0
+    private let hookServer = HookServer.shared
+    private let transcriptReader = TranscriptReader.shared
     
-    // Track state changes to prevent false positives
-    private var stateChangeTracking: [Int32: (wasWorking: Bool, notWorkingCount: Int)] = [:]
-    
-    // Persistent mapping of PID to JSONL file path to prevent reassignments
+    // Map hook session IDs to process PIDs
+    private var hookSessionToPID: [String: Int32] = [:]
+    // Map process PIDs to their terminal TTYs for window focusing
+    private var pidToTTY: [Int32: String] = [:]
+    // Persistent mapping of PID to JSONL file path from hooks
     private var pidToJsonlPath: [Int32: String] = [:]
+    // Map PID to transcript path for accurate token counting
+    private var pidToTranscriptPath: [Int32: String] = [:]
+    // Track when hook sessions first appear for time correlation
+    private var hookSessionFirstSeen: [String: Date] = [:]
+    // Track mapping confidence scores
+    private var mappingConfidence: [String: Double] = [:]
+    
+    // Enhanced working directory mapping
+    private var pidToWorkingDirectory: [Int32: String] = [:] // Normalized working directories by PID
+    private var workingDirectoryToHookSession: [String: String] = [:] // Map normalized cwd to hook session ID
+    
+    // Session mapping attempt results
+    struct SessionMapping {
+        let sessionId: String
+        let pid: Int32
+        let confidence: Double
+        let method: MappingMethod
+        let timestamp: Date
+    }
+    
+    enum MappingMethod {
+        case workingDirectoryMatch
+        case startTimeCorrelation  
+        case projectNameMatch
+        case firstAvailable
+    }
     
     func startMonitoring() {
-        timer = Timer.scheduledTimer(withTimeInterval: updateInterval, repeats: true) { [weak self] _ in
-            self?.updateSessions()
+        // Start the hook server
+        hookServer.start()
+        
+        // Set up hook callbacks
+        hookServer.onPreToolUse = { [weak self] hookData in
+            self?.handlePreToolUse(hookData)
         }
-        // Run first update after a short delay to avoid startup issues
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.updateSessions()
+        
+        hookServer.onPostToolUse = { [weak self] hookData in
+            self?.handlePostToolUse(hookData)
+        }
+        
+        hookServer.onStop = { [weak self] hookData in
+            self?.handleStop(hookData)
+        }
+        
+        hookServer.onNotification = { [weak self] hookData in
+            self?.handleNotification(hookData)
+        }
+        
+        // Perform initial scan immediately to reduce startup delay
+        performInitialScan()
+        
+        // Periodically rescan to clean up any orphaned sessions
+        Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+            self?.scanForClaudeProcesses()
         }
     }
     
     func stopMonitoring() {
-        timer?.invalidate()
-        timer = nil
+        hookServer.stop()
     }
     
-    private func updateSessions() {
-        // Run process scanning on background queue to avoid blocking UI
+    private func scanForClaudeProcesses() {
+        // Initial scan to find Claude processes and set up basic session info
         DispatchQueue.global(qos: .background).async { [weak self] in
             guard let self = self else { return }
             
-            
-            // Get running Claude processes
             let claudeProcesses = self.processDetector.getAllClaudeProcesses()
-            
-            // Get active session files
-            let sessionFiles = self.fileParser.findActiveSessionFiles()
-            
-            // Get ALL JSONL files and sort by modification time
-            let allJsonlFiles = self.fileParser.findProjectJSONLFiles()
-            
-            // Sort by modification date (most recent first)
-            let sortedJsonlFiles = allJsonlFiles.sorted { (first, second) in
-                let firstMod = (try? FileManager.default.attributesOfItem(atPath: first.path))?[.modificationDate] as? Date ?? Date.distantPast
-                let secondMod = (try? FileManager.default.attributesOfItem(atPath: second.path))?[.modificationDate] as? Date ?? Date.distantPast
-                return firstMod > secondMod
-            }
-            
-            
             var updatedSessions: [Session] = []
-            var usedJsonlPaths = Set<String>()
             
-            // Sort processes by PID to ensure consistent assignment
-            let sortedProcesses = claudeProcesses.sorted { $0.pid < $1.pid }
-            
-            for (index, process) in sortedProcesses.enumerated() {
-                // Always create a fresh session to avoid stale data
-                var session = Session(processID: process.pid, commandLine: process.commandLine)
-                
-                // Copy over persistent data from existing session if it exists
+            for process in claudeProcesses {
+                // Check if we already have a session for this PID to preserve all hook data
+                var session: Session
                 if let existingSession = self.sessions.first(where: { $0.processID == process.pid }) {
-                    session.sessionId = existingSession.sessionId
-                    session.projectName = existingSession.projectName
-                    session.workingDirectory = existingSession.workingDirectory
+                    // Update existing session but preserve ALL important hook-provided data
+                    session = existingSession
+                    session.lastUpdateTime = Date()
+                    session.terminalAppName = process.terminalWindow
+                    session.terminalTTY = process.terminalWindow
+                    session.workingDirectory = process.workingDirectory
+                    
+                    // Don't overwrite hook-provided data
+                    // Preserving existing session data
+                } else {
+                    // Create new session for new process
+                    session = Session(processID: process.pid, commandLine: process.commandLine)
+                    session.lastUpdateTime = Date()
+                    session.terminalAppName = process.terminalWindow
+                    session.terminalTTY = process.terminalWindow
+                    session.workingDirectory = process.workingDirectory
+                    // Created new session
                 }
                 
-                session.lastUpdateTime = Date()
-                session.terminalAppName = process.terminalWindow
+                // Store TTY for window focusing
+                if let tty = process.terminalWindow {
+                    self.pidToTTY[process.pid] = tty
+                }
                 
-                // Get terminal window title
+                // Get terminal window title for project name
                 if let windowTitle = self.terminalParser.getTerminalWindowTitle(for: session) {
-                    
-                    // Extract project name from window title
-                    // Remove "(claude)" suffix if present
                     var cleanTitle = windowTitle.replacingOccurrences(of: " (claude)", with: "")
-                    
-                    // Remove any leading emoji/symbols
                     cleanTitle = cleanTitle.trimmingCharacters(in: CharacterSet(charactersIn: "✳✶"))
                     cleanTitle = cleanTitle.trimmingCharacters(in: .whitespaces)
                     
-                    // If it contains a path, extract the last component
                     if cleanTitle.contains("/") {
                         let components = cleanTitle.split(separator: "/")
                         if let lastComponent = components.last {
@@ -100,165 +132,79 @@ class SessionMonitor: ObservableObject {
                     }
                 }
                 
-                // Update terminal content data (working state, context percentage)
-                self.terminalParser.updateSessionWithTerminalContent(&session)
-                
-                // Track state changes to prevent false positives
-                let pid = process.pid
-                if let tracking = self.stateChangeTracking[pid] {
-                    if tracking.wasWorking && !session.isWorking {
-                        // Session stopped working, increment counter
-                        self.stateChangeTracking[pid] = (wasWorking: tracking.wasWorking, notWorkingCount: tracking.notWorkingCount + 1)
-                        
-                        // Only play sound after 2 consecutive "not working" states
-                        if tracking.notWorkingCount >= 1 { // This will be the 2nd time
-                            DispatchQueue.main.async {
-                                PreferencesManager.shared.playCurrentSound()
-                            }
-                            // Reset tracking after playing sound
-                            self.stateChangeTracking[pid] = (wasWorking: false, notWorkingCount: 0)
+                // Try to extract task description from JSONL if we have one and don't already have it
+                // Only update if we don't have a task description AND we have a JSONL file
+                if session.taskDescription == nil || session.taskDescription == "Claude Session" {
+                    if let jsonlFile = self.pidToJsonlPath[process.pid] {
+                        print("PID \(process.pid) mapped to transcript: \(jsonlFile)")
+                        if let newTaskDescription = self.transcriptReader.getTaskDescription(
+                            from: jsonlFile,
+                            sessionId: "scan-\(process.pid)"
+                        ) {
+                            session.taskDescription = newTaskDescription
                         }
-                    } else if session.isWorking {
-                        // Session is working, reset tracking
-                        self.stateChangeTracking[pid] = (wasWorking: true, notWorkingCount: 0)
+                    } else {
+                        print("PID \(process.pid) has no mapped transcript file")
                     }
                 } else {
-                    // First time seeing this session
-                    self.stateChangeTracking[pid] = (wasWorking: session.isWorking, notWorkingCount: 0)
+                    // Already has task description
                 }
                 
-                // Try to find associated JSONL file for this session
-                var foundTokenData = false
-                var bestMatch: (path: String, sessionId: String)?
-                
-                // Check if we already have a persistent mapping for this PID
-                if let existingPath = self.pidToJsonlPath[process.pid],
-                   sortedJsonlFiles.contains(where: { $0.path == existingPath }) {
-                    // Use the existing mapping
-                    bestMatch = sortedJsonlFiles.first(where: { $0.path == existingPath })
-                    usedJsonlPaths.insert(existingPath)
-                }
-                
-                // Try to find JSONL file based on project name match if no existing mapping
-                if bestMatch == nil, let projectName = session.projectName, !projectName.isEmpty {
-                    // Clean up the project name for better matching
-                    let cleanProjectName = projectName
-                        .replacingOccurrences(of: ":", with: "")
-                        .replacingOccurrences(of: " ", with: "-")
-                        .lowercased()
+                // Update working directory mapping
+                if let workingDir = process.workingDirectory {
+                    let normalizedPath = self.normalizeWorkingDirectory(workingDir)
+                    self.pidToWorkingDirectory[process.pid] = normalizedPath
                     
-                    // First, try exact match based on project name in path
-                    for (jsonlPath, sessionId) in sortedJsonlFiles {
-                        if !usedJsonlPaths.contains(jsonlPath) {
-                            let lowerPath = jsonlPath.lowercased()
-                            if lowerPath.contains(cleanProjectName) ||
-                               lowerPath.contains(projectName.lowercased()) {
-                                bestMatch = (path: jsonlPath, sessionId: sessionId)
-                                usedJsonlPaths.insert(jsonlPath)
-                                break
-                            }
-                        }
+                    // Check if we have a hook session for this working directory
+                    if let hookSessionId = self.workingDirectoryToHookSession[normalizedPath],
+                       self.hookSessionToPID[hookSessionId] == nil {
+                        // Map this PID to the hook session
+                        self.hookSessionToPID[hookSessionId] = process.pid
+                        print("Mapped idle PID \(process.pid) to hook session \(hookSessionId) via working directory")
                     }
-                    
-                    // If no exact match, try fuzzy match with individual words
-                    if bestMatch == nil {
-                        let projectWords = projectName.split(separator: " ").map { $0.lowercased() }
-                        for (jsonlPath, sessionId) in sortedJsonlFiles {
-                            if !usedJsonlPaths.contains(jsonlPath) {
-                                let jsonlProjectName = self.fileParser.extractProjectName(from: jsonlPath).lowercased()
-                                
-                                // Check if any significant words match
-                                let matchCount = projectWords.filter { word in
-                                    word.count > 2 && jsonlProjectName.contains(word)
-                                }.count
-                                
-                                if matchCount > 0 {
-                                    bestMatch = (path: jsonlPath, sessionId: sessionId)
-                                    usedJsonlPaths.insert(jsonlPath)
+                }
+                
+                // Set up JSONL mapping if we don't have one from hooks
+                if self.pidToJsonlPath[process.pid] == nil {
+                    // Try to find JSONL file that matches this session's working directory
+                    if let workingDir = session.workingDirectory {
+                        let normalizedWorkingDir = self.normalizeWorkingDirectory(workingDir)
+                        let allJsonlFiles = self.fileParser.findProjectJSONLFiles()
+                        
+                        // Look for JSONL files that match the working directory
+                        for jsonlFile in allJsonlFiles {
+                            if let fileWorkingDir = self.fileParser.getWorkingDirectory(from: jsonlFile.path) {
+                                let normalizedFileDir = self.normalizeWorkingDirectory(fileWorkingDir)
+                                if normalizedFileDir == normalizedWorkingDir {
+                                    self.pidToJsonlPath[process.pid] = jsonlFile.path
+                                    print("Mapped PID \(process.pid) to JSONL based on working directory: \(jsonlFile.path)")
+                                    
+                                    // Extract task description immediately
+                                    session.taskDescription = self.transcriptReader.getTaskDescription(
+                                        from: jsonlFile.path,
+                                        sessionId: "scan-\(process.pid)"
+                                    )
                                     break
                                 }
                             }
                         }
-                    }
-                }
-                
-                // If still no match, fall back to time-based matching
-                if bestMatch == nil {
-                    for (jsonlPath, sessionId) in sortedJsonlFiles {
-                        if !usedJsonlPaths.contains(jsonlPath) {
-                            bestMatch = (path: jsonlPath, sessionId: sessionId)
-                            usedJsonlPaths.insert(jsonlPath)
-                            break
+                        
+                        if self.pidToJsonlPath[process.pid] == nil {
+                            print("No JSONL found for working directory \(normalizedWorkingDir) for PID \(process.pid)")
                         }
-                    }
-                }
-                
-                if let match = bestMatch {
-                    // Only parse session info (not token data) for performance
-                    let (sessionId, workingDir) = self.fileParser.getSessionInfo(from: match.path)
-                    session.sessionId = sessionId
-                    session.workingDirectory = workingDir
-                    
-                    // Store the mapping persistently
-                    self.pidToJsonlPath[process.pid] = match.path
-                    
-                    // Keep existing token data if we have it
-                    if let existingSession = self.sessions.first(where: { $0.processID == process.pid }) {
-                        session.inputTokens = existingSession.inputTokens
-                        session.outputTokens = existingSession.outputTokens
-                        session.costUSD = existingSession.costUSD
-                        session.tokensLastRefreshed = existingSession.tokensLastRefreshed
-                        session.isRefreshingTokens = existingSession.isRefreshingTokens
-                    }
-                    
-                    foundTokenData = true
-                }
-                
-                // If we didn't find token data, keep previous values
-                if !foundTokenData && self.sessions.contains(where: { $0.processID == process.pid }) {
-                    if let existingSession = self.sessions.first(where: { $0.processID == process.pid }) {
-                        session.inputTokens = existingSession.inputTokens
-                        session.outputTokens = existingSession.outputTokens
-                        session.costUSD = existingSession.costUSD
-                        session.compactionPercentage = existingSession.compactionPercentage
-                        session.projectName = existingSession.projectName
-                        session.sessionId = existingSession.sessionId
-                        session.workingDirectory = existingSession.workingDirectory
+                    } else {
+                        print("No working directory for PID \(process.pid), cannot map to JSONL")
                     }
                 }
                 
                 updatedSessions.append(session)
             }
             
-            // Apply custom ordering if available, otherwise sort by PID
-            if !self.sessionOrder.isEmpty {
-                updatedSessions.sort { session1, session2 in
-                    let index1 = self.sessionOrder.firstIndex(of: session1.processID) ?? Int.max
-                    let index2 = self.sessionOrder.firstIndex(of: session2.processID) ?? Int.max
-                    return index1 < index2
-                }
-            } else {
-                // Default: sort by PID
-                updatedSessions.sort { $0.processID < $1.processID }
-            }
-            
-            // Update session order to include any new sessions
-            let currentPIDs = Set(updatedSessions.map { $0.processID })
-            let orderedPIDs = self.sessionOrder.filter { currentPIDs.contains($0) }
-            let newPIDs = currentPIDs.subtracting(Set(orderedPIDs))
-            self.sessionOrder = orderedPIDs + newPIDs.sorted()
-            
-            // Clean up tracking for sessions that no longer exist
-            let deadPIDs = Set(self.stateChangeTracking.keys).subtracting(currentPIDs)
-            for pid in deadPIDs {
-                self.stateChangeTracking.removeValue(forKey: pid)
-                self.pidToJsonlPath.removeValue(forKey: pid)
-            }
-            
             DispatchQueue.main.async {
                 self.sessions = updatedSessions
-                self.onSessionsChanged?()
                 
+                
+                self.onSessionsChanged?()
             }
         }
     }
@@ -446,7 +392,7 @@ class SessionMonitor: ObservableObject {
         
             var error: NSDictionary?
             if let scriptObject = NSAppleScript(source: script) {
-                let result = scriptObject.executeAndReturnError(&error)
+                _ = scriptObject.executeAndReturnError(&error)
                 
                 if let error = error {
                     let errorNumber = error["NSAppleScriptErrorNumber"] as? Int ?? 0
@@ -509,7 +455,7 @@ class SessionMonitor: ObservableObject {
         if let scriptObject = NSAppleScript(source: script) {
             scriptObject.executeAndReturnError(&error)
             
-            if let error = error {
+            if error != nil {
                 // Try activating parent process
                 activateParentProcess(of: pid)
             }
@@ -554,7 +500,12 @@ class SessionMonitor: ObservableObject {
     }
     
     func refreshTokenData(for session: Session) {
-        guard let jsonlPath = pidToJsonlPath[session.processID] else { return }
+        // Use the transcript path from hooks if available, otherwise fall back to old method
+        let transcriptPath = pidToTranscriptPath[session.processID] ?? pidToJsonlPath[session.processID]
+        guard let jsonlPath = transcriptPath else { 
+            print("No transcript path found for PID \(session.processID)")
+            return 
+        }
         
         // Set refreshing state
         DispatchQueue.main.async { [weak self] in
@@ -580,6 +531,329 @@ class SessionMonitor: ObservableObject {
                     self.onSessionsChanged?()
                 }
             }
+        }
+    }
+    
+    // MARK: - Hook Handlers
+    
+    private func handlePreToolUse(_ hookData: HookData) {
+        // Extract and normalize working directory from transcript
+        if let workingDir = fileParser.getWorkingDirectory(from: hookData.transcriptPath) {
+            let normalizedPath = normalizeWorkingDirectory(workingDir)
+            workingDirectoryToHookSession[normalizedPath] = hookData.sessionId
+            print("Mapped working directory \(normalizedPath) to hook session \(hookData.sessionId)")
+        }
+        
+        // Find or create session for this hook session ID
+        let pid = findOrCreateSession(for: hookData.sessionId, transcriptPath: hookData.transcriptPath)
+        
+        // Don't process if no matching process found
+        guard pid != -1 else { return }
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            if let index = self.sessions.firstIndex(where: { $0.processID == pid }) {
+                self.sessions[index].isWorking = true
+                self.sessions[index].hasOutput = false
+                self.sessions[index].currentTool = hookData.toolName
+                self.sessions[index].currentToolDetails = self.extractToolDetails(hookData.toolDetails)
+                self.sessions[index].lastHookTimestamp = Date()
+                self.sessions[index].hookSessionId = hookData.sessionId
+                
+                // Store the transcript path for this PID
+                self.pidToTranscriptPath[pid] = hookData.transcriptPath
+                
+                // Extract task description from transcript if we don't have it yet or refresh it
+                let newTaskDescription = self.transcriptReader.getTaskDescription(
+                    from: hookData.transcriptPath,
+                    sessionId: hookData.sessionId
+                )
+                if let newDescription = newTaskDescription {
+                    self.sessions[index].taskDescription = newDescription
+                    print("Hook: Set task description for PID \(pid): \(newDescription)")
+                }
+                
+                self.onSessionsChanged?()
+            }
+        }
+    }
+    
+    private func handlePostToolUse(_ hookData: HookData) {
+        guard let pid = hookSessionToPID[hookData.sessionId] else { return }
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            if let index = self.sessions.firstIndex(where: { $0.processID == pid }) {
+                // Keep working state true - only Stop hook marks it false
+                self.sessions[index].lastHookTimestamp = Date()
+                self.onSessionsChanged?()
+            }
+        }
+    }
+    
+    private func handleStop(_ hookData: HookData) {
+        guard let pid = hookSessionToPID[hookData.sessionId] else { return }
+        
+        // Store the transcript path for this PID
+        pidToTranscriptPath[pid] = hookData.transcriptPath
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            if let index = self.sessions.firstIndex(where: { $0.processID == pid }) {
+                self.sessions[index].isWorking = false
+                self.sessions[index].hasOutput = true
+                self.sessions[index].currentTool = nil
+                self.sessions[index].currentToolDetails = nil
+                self.sessions[index].lastHookTimestamp = Date()
+                
+                // Extract task description from transcript if we don't have it yet or refresh it
+                let newTaskDescription = self.transcriptReader.getTaskDescription(
+                    from: hookData.transcriptPath,
+                    sessionId: hookData.sessionId
+                )
+                if let newDescription = newTaskDescription {
+                    self.sessions[index].taskDescription = newDescription
+                    print("Hook: Set task description for PID \(pid): \(newDescription)")
+                }
+                
+                // Play notification sound
+                PreferencesManager.shared.playCurrentSound()
+                
+                self.onSessionsChanged?()
+            }
+        }
+    }
+    
+    private func handleNotification(_ hookData: HookData) {
+        guard let pid = hookSessionToPID[hookData.sessionId] else { return }
+        
+        // Store the transcript path for this PID
+        pidToTranscriptPath[pid] = hookData.transcriptPath
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            if let index = self.sessions.firstIndex(where: { $0.processID == pid }) {
+                self.sessions[index].isWorking = false
+                self.sessions[index].hasOutput = true
+                self.sessions[index].currentTool = nil
+                self.sessions[index].currentToolDetails = nil
+                self.sessions[index].lastHookTimestamp = Date()
+                
+                // Extract task description from transcript if we don't have it yet or refresh it
+                let newTaskDescription = self.transcriptReader.getTaskDescription(
+                    from: hookData.transcriptPath,
+                    sessionId: hookData.sessionId
+                )
+                if let newDescription = newTaskDescription {
+                    self.sessions[index].taskDescription = newDescription
+                    print("Hook: Set task description for PID \(pid): \(newDescription)")
+                }
+                
+                // Play notification sound for waiting state
+                PreferencesManager.shared.playCurrentSound()
+                
+                self.onSessionsChanged?()
+            }
+        }
+    }
+    
+    private func findOrCreateSession(for hookSessionId: String, transcriptPath: String) -> Int32 {
+        // Check if we already know this session
+        if let pid = hookSessionToPID[hookSessionId] {
+            return pid
+        }
+        
+        // Track when we first see this session for timing correlation
+        if hookSessionFirstSeen[hookSessionId] == nil {
+            hookSessionFirstSeen[hookSessionId] = Date()
+        }
+        
+        // Get available Claude processes
+        let claudeProcesses = processDetector.getAllClaudeProcesses()
+        let unmappedProcesses = claudeProcesses.filter { process in
+            !hookSessionToPID.values.contains(process.pid)
+        }
+        
+        guard !unmappedProcesses.isEmpty else {
+            print("Warning: Hook event received for session \(hookSessionId) but no unmapped Claude processes found")
+            return -1
+        }
+        
+        // Try multiple mapping methods with confidence scoring
+        var mappingCandidates: [SessionMapping] = []
+        
+        // Method 1: Working Directory Matching (highest confidence)
+        if let sessionWorkingDir = fileParser.getWorkingDirectory(from: transcriptPath) {
+            let normalizedSessionDir = normalizeWorkingDirectory(sessionWorkingDir)
+            
+            // First refresh working directory mappings
+            updateWorkingDirectoryMappings()
+            
+            for process in unmappedProcesses {
+                if let processWorkingDir = pidToWorkingDirectory[process.pid],
+                   processWorkingDir == normalizedSessionDir {
+                    mappingCandidates.append(SessionMapping(
+                        sessionId: hookSessionId,
+                        pid: process.pid,
+                        confidence: 0.95,
+                        method: .workingDirectoryMatch,
+                        timestamp: Date()
+                    ))
+                    print("Found working directory match: PID \(process.pid) with \(normalizedSessionDir)")
+                }
+            }
+        }
+        
+        // Method 2: Start Time Correlation (high confidence for recent sessions)
+        if let sessionFirstSeen = hookSessionFirstSeen[hookSessionId] {
+            for process in unmappedProcesses {
+                let timeDifference = abs(sessionFirstSeen.timeIntervalSince(process.startTime))
+                if timeDifference < 30.0 { // Within 30 seconds
+                    let confidence = max(0.5, 0.9 - (timeDifference / 60.0)) // Decreases with time gap
+                    mappingCandidates.append(SessionMapping(
+                        sessionId: hookSessionId,
+                        pid: process.pid,
+                        confidence: confidence,
+                        method: .startTimeCorrelation,
+                        timestamp: Date()
+                    ))
+                }
+            }
+        }
+        
+        // Method 3: Enhanced Project Name Matching (medium confidence)
+        let projectName = fileParser.extractProjectName(from: transcriptPath)
+        for process in unmappedProcesses {
+            var tempSession = Session(processID: process.pid, commandLine: process.commandLine)
+            tempSession.terminalAppName = process.terminalWindow
+            
+            if let windowTitle = terminalParser.getTerminalWindowTitle(for: tempSession) {
+                var cleanTitle = windowTitle.replacingOccurrences(of: " (claude)", with: "")
+                cleanTitle = cleanTitle.trimmingCharacters(in: CharacterSet(charactersIn: "✳✶"))
+                cleanTitle = cleanTitle.trimmingCharacters(in: .whitespaces)
+                
+                if cleanTitle.contains("/") {
+                    let components = cleanTitle.split(separator: "/")
+                    if let lastComponent = components.last {
+                        cleanTitle = String(lastComponent)
+                    }
+                }
+                
+                // Calculate string similarity confidence
+                let confidence = calculateStringSimilarity(projectName, cleanTitle)
+                if confidence > 0.3 { // Minimum similarity threshold
+                    mappingCandidates.append(SessionMapping(
+                        sessionId: hookSessionId,
+                        pid: process.pid,
+                        confidence: confidence * 0.7, // Scale down confidence
+                        method: .projectNameMatch,
+                        timestamp: Date()
+                    ))
+                }
+            }
+        }
+        
+        // Select the best mapping candidate
+        if let bestMapping = mappingCandidates.max(by: { $0.confidence < $1.confidence }) {
+            hookSessionToPID[hookSessionId] = bestMapping.pid
+            mappingConfidence[hookSessionId] = bestMapping.confidence
+            print("Mapped session \(hookSessionId) to PID \(bestMapping.pid) using \(bestMapping.method) (confidence: \(bestMapping.confidence))")
+            return bestMapping.pid
+        }
+        
+        // Fallback: Use first available unmapped process (lowest confidence)
+        if let process = unmappedProcesses.first {
+            hookSessionToPID[hookSessionId] = process.pid
+            mappingConfidence[hookSessionId] = 0.1
+            print("Mapped session \(hookSessionId) to PID \(process.pid) using fallback method (confidence: 0.1)")
+            return process.pid
+        }
+        
+        return -1
+    }
+    
+    private func calculateStringSimilarity(_ str1: String, _ str2: String) -> Double {
+        let s1 = str1.lowercased()
+        let s2 = str2.lowercased()
+        
+        // Check for exact match
+        if s1 == s2 { return 1.0 }
+        
+        // Check for substring matches
+        if s1.contains(s2) || s2.contains(s1) { return 0.8 }
+        
+        // Simple Levenshtein-inspired similarity
+        let maxLength = max(s1.count, s2.count)
+        guard maxLength > 0 else { return 0.0 }
+        
+        let commonChars = Set(s1).intersection(Set(s2)).count
+        return Double(commonChars) / Double(maxLength)
+    }
+    
+    private func extractToolDetails(_ details: ToolDetails?) -> String? {
+        guard let details = details else { return nil }
+        
+        if let command = details.command {
+            return command
+        } else if let filePath = details.filePath {
+            return filePath
+        } else if let pattern = details.pattern {
+            return pattern
+        }
+        
+        return nil
+    }
+    
+    private func normalizeWorkingDirectory(_ path: String) -> String {
+        // Normalize the path by resolving symlinks and removing trailing slashes
+        let url = URL(fileURLWithPath: path)
+        let resolved = url.standardizedFileURL.path
+        return resolved.hasSuffix("/") && resolved != "/" ? String(resolved.dropLast()) : resolved
+    }
+    
+    private func updateWorkingDirectoryMappings() {
+        // Update working directory mappings for all active processes
+        for process in processDetector.getAllClaudeProcesses() {
+            if let workingDir = process.workingDirectory {
+                let normalizedPath = normalizeWorkingDirectory(workingDir)
+                pidToWorkingDirectory[process.pid] = normalizedPath
+                print("Updated working directory for PID \(process.pid): \(normalizedPath)")
+            }
+        }
+    }
+    
+    private func performInitialScan() {
+        // Quick synchronous scan on startup to minimize delay
+        let claudeProcesses = processDetector.getAllClaudeProcesses()
+        var initialSessions: [Session] = []
+        
+        for process in claudeProcesses {
+            var session = Session(processID: process.pid, commandLine: process.commandLine)
+            session.lastUpdateTime = Date()
+            session.terminalAppName = process.terminalWindow
+            session.terminalTTY = process.terminalWindow
+            session.workingDirectory = process.workingDirectory
+            
+            // Store TTY for window focusing
+            if let tty = process.terminalWindow {
+                self.pidToTTY[process.pid] = tty
+            }
+            
+            initialSessions.append(session)
+        }
+        
+        // Update UI immediately
+        self.sessions = initialSessions
+        self.isInitialLoadComplete = true
+        self.onSessionsChanged?()
+        
+        // Then do the detailed scan in background
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.scanForClaudeProcesses()
         }
     }
     

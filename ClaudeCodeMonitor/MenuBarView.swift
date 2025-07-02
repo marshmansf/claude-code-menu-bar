@@ -39,7 +39,9 @@ struct MenuBarView: View {
             
             Divider()
             
-            if sessionMonitor.sessions.isEmpty {
+            if !sessionMonitor.isInitialLoadComplete {
+                loadingView
+            } else if sessionMonitor.sessions.isEmpty {
                 emptyStateView
             } else {
                 sessionListView
@@ -137,6 +139,19 @@ struct MenuBarView: View {
         }
     }
     
+    private var loadingView: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .scaleEffect(1.5)
+            
+            Text("Scanning for Claude sessions...")
+                .font(.headline)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+    
     private var emptyStateView: some View {
         VStack(spacing: 16) {
             Image(systemName: "terminal")
@@ -215,12 +230,33 @@ struct SessionRowView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(session.projectName ?? "Unknown Project")
+                            // Show working directory first if available
+                            if let workingDir = session.workingDirectory {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "folder")
+                                        .font(.system(.caption2))
+                                        .foregroundColor(.secondary)
+                                    Text(URL(fileURLWithPath: workingDir).lastPathComponent)
+                                        .font(.system(.callout))
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                }
+                                .help("Working directory: \(workingDir)")
+                            }
+                            
+                            Text(session.taskDescription ?? session.projectName ?? "Claude Session")
                                 .font(.system(.body))
                                 .fontWeight(.medium)
-                                .help(session.workingDirectory ?? "Working directory unknown")
+                                .lineLimit(1)
+                                .help(session.taskDescription ?? session.workingDirectory ?? "Working directory unknown")
                             
-                            HStack(spacing: 28) {
+                            HStack(spacing: 16) {
+                                if let projectName = session.projectName {
+                                    Label(projectName, systemImage: "folder")
+                                        .font(.system(.caption))
+                                        .foregroundColor(.secondary)
+                                }
+                                
                                 Text("PID: \(String(session.processID))")
                                     .font(.system(.caption, design: .monospaced))
                                     .foregroundColor(.secondary)
@@ -236,14 +272,20 @@ struct SessionRowView: View {
                         
                         Spacer()
                         
-                        Text(session.statusDescription)
-                            .font(.caption)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 2)
-                            .background(statusBackgroundColor)
-                            .foregroundColor(statusForegroundColor)
-                            .cornerRadius(4)
-                            .help(session.isWorking ? "Claude is currently processing" : (session.hasOutput ? "Claude has output waiting for your input" : "Claude is idle"))
+                        HStack(spacing: 4) {
+                            if session.isWorking, let tool = session.currentTool {
+                                Text(session.toolIcon(for: tool))
+                                    .font(.caption)
+                            }
+                            Text(session.statusDescription)
+                                .font(.caption)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(statusBackgroundColor)
+                        .foregroundColor(statusForegroundColor)
+                        .cornerRadius(4)
+                        .help(toolHelpText)
                     }
                     
                     Button(action: {
@@ -360,6 +402,21 @@ struct SessionRowView: View {
             return .orange
         } else {
             return .gray
+        }
+    }
+    
+    private var toolHelpText: String {
+        if session.isWorking {
+            if let _ = session.currentTool, let details = session.currentToolDetails {
+                return "Claude is \(session.statusDescription.lowercased()): \(details)"
+            } else if session.currentTool != nil {
+                return "Claude is \(session.statusDescription.lowercased())"
+            }
+            return "Claude is currently processing"
+        } else if session.hasOutput {
+            return "Claude has output waiting for your input"
+        } else {
+            return "Claude is idle"
         }
     }
 }

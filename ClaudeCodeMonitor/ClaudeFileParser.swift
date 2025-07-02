@@ -270,4 +270,53 @@ class ClaudeFileParser {
         
         return (nil, nil)
     }
+    
+    func getWorkingDirectory(from jsonlPath: String) -> String? {
+        // Optimized method to extract just the working directory from first line
+        do {
+            let content = try String(contentsOfFile: jsonlPath, encoding: .utf8)
+            let lines = content.components(separatedBy: .newlines)
+            
+            // Check first line only for efficiency
+            if let firstLine = lines.first,
+               !firstLine.isEmpty,
+               let data = firstLine.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                return json["cwd"] as? String
+            }
+        } catch {
+        }
+        
+        return nil
+    }
+    
+    func getSessionMetadata(from jsonlPath: String) -> (sessionId: String?, workingDir: String?, startTime: Date?) {
+        // Enhanced method to get comprehensive session metadata
+        do {
+            let content = try String(contentsOfFile: jsonlPath, encoding: .utf8)
+            let lines = content.components(separatedBy: .newlines)
+            
+            // Check first line for session metadata
+            if let firstLine = lines.first,
+               !firstLine.isEmpty,
+               let data = firstLine.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                
+                let sessionId = json["sessionId"] as? String
+                let cwd = json["cwd"] as? String
+                
+                // Parse timestamp for session start time
+                var startTime: Date?
+                if let timestamp = json["timestamp"] as? String {
+                    let formatter = ISO8601DateFormatter()
+                    startTime = formatter.date(from: timestamp)
+                }
+                
+                return (sessionId, cwd, startTime)
+            }
+        } catch {
+        }
+        
+        return (nil, nil, nil)
+    }
 }

@@ -14,6 +14,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Ensure the app is properly activated
         NSApp.setActivationPolicy(.accessory)
         
+        // Configure hooks on startup
+        HookConfigManager.shared.ensureHooksConfigured()
+        
         setupMenuBar()
         setupSessionMonitor()
         setupEventMonitor()

@@ -19,6 +19,9 @@
 		8D1107421E3E100000000011 /* TerminalContentParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D1107431E3E100000000011 /* TerminalContentParser.swift */; };
 		8D1107441E3E100000000012 /* PreferencesManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D1107451E3E100000000012 /* PreferencesManager.swift */; };
 		8D1107461E3E100000000013 /* PreferencesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D1107471E3E100000000013 /* PreferencesView.swift */; };
+		8D1107481E3E100000000014 /* HookServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D1107491E3E100000000014 /* HookServer.swift */; };
+		8D11074A1E3E100000000015 /* HookConfigManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D11074B1E3E100000000015 /* HookConfigManager.swift */; };
+		8D11074C1E3E100000000016 /* TranscriptReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D11074D1E3E100000000016 /* TranscriptReader.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -37,6 +40,9 @@
 		8D1107431E3E100000000011 /* TerminalContentParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalContentParser.swift; sourceTree = "<group>"; };
 		8D1107451E3E100000000012 /* PreferencesManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferencesManager.swift; sourceTree = "<group>"; };
 		8D1107471E3E100000000013 /* PreferencesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferencesView.swift; sourceTree = "<group>"; };
+		8D1107491E3E100000000014 /* HookServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HookServer.swift; sourceTree = "<group>"; };
+		8D11074B1E3E100000000015 /* HookConfigManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HookConfigManager.swift; sourceTree = "<group>"; };
+		8D11074D1E3E100000000016 /* TranscriptReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptReader.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -85,6 +91,9 @@
 				8D1107431E3E100000000011 /* TerminalContentParser.swift */,
 				8D1107451E3E100000000012 /* PreferencesManager.swift */,
 				8D1107471E3E100000000013 /* PreferencesView.swift */,
+				8D1107491E3E100000000014 /* HookServer.swift */,
+				8D11074B1E3E100000000015 /* HookConfigManager.swift */,
+				8D11074D1E3E100000000016 /* TranscriptReader.swift */,
 				8D1107401E3E100000000010 /* ClaudeIcon.png */,
 				8D11073A1E3E100000000006 /* Info.plist */,
 				8D11073B1E3E100000000007 /* ClaudeCodeMonitor.entitlements */,
@@ -175,6 +184,9 @@
 				8D1107421E3E100000000011 /* TerminalContentParser.swift in Sources */,
 				8D1107441E3E100000000012 /* PreferencesManager.swift in Sources */,
 				8D1107461E3E100000000013 /* PreferencesView.swift in Sources */,
+				8D1107481E3E100000000014 /* HookServer.swift in Sources */,
+				8D11074A1E3E100000000015 /* HookConfigManager.swift in Sources */,
+				8D11074C1E3E100000000016 /* TranscriptReader.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

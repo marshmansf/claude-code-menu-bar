@@ -20,10 +20,15 @@ struct Session: Identifiable, Equatable {
     var tokensLastRefreshed: Date?
     var isRefreshingTokens: Bool
     
-    // Working state details
-    var workingPhrase: String?
-    var workingElapsedSeconds: Int?
-    var workingCurrentTokens: Int?
+    // Hook-based state tracking
+    var hookSessionId: String?
+    var currentTool: String?
+    var currentToolDetails: String?
+    var lastHookTimestamp: Date?
+    var taskDescription: String? // Extracted from transcript
+    
+    // Terminal association
+    var terminalTTY: String? // Used for window focusing only
     
     init(processID: Int32, commandLine: String) {
         self.processID = processID
@@ -41,11 +46,14 @@ struct Session: Identifiable, Equatable {
         self.projectName = nil
         self.sessionId = nil
         self.workingDirectory = nil
-        self.workingPhrase = nil
-        self.workingElapsedSeconds = nil
-        self.workingCurrentTokens = nil
         self.tokensLastRefreshed = nil
         self.isRefreshingTokens = false
+        self.hookSessionId = nil
+        self.currentTool = nil
+        self.currentToolDetails = nil
+        self.lastHookTimestamp = nil
+        self.taskDescription = nil
+        self.terminalTTY = nil
     }
     
     static func == (lhs: Session, rhs: Session) -> Bool {
@@ -58,14 +66,64 @@ struct Session: Identifiable, Equatable {
     
     var statusDescription: String {
         if isWorking {
-            if let phrase = workingPhrase, let seconds = workingElapsedSeconds {
-                return "\(phrase)… (\(seconds)s)"
+            if let tool = currentTool {
+                return toolDisplayName(for: tool)
             }
             return "Working"
         } else if hasOutput {
             return "Waiting"
         } else {
             return "Idle"
+        }
+    }
+    
+    func toolDisplayName(for tool: String) -> String {
+        switch tool {
+        case "Bash":
+            return "Running command"
+        case "Edit", "MultiEdit":
+            return "Editing file"
+        case "Write":
+            return "Writing file"
+        case "Read":
+            return "Reading file"
+        case "Grep":
+            return "Searching files"
+        case "Glob":
+            return "Finding files"
+        case "WebSearch":
+            return "Searching web"
+        case "WebFetch":
+            return "Fetching web"
+        case "Task":
+            return "Running task"
+        case "LS":
+            return "Listing files"
+        default:
+            return tool
+        }
+    }
+    
+    func toolIcon(for tool: String) -> String {
+        switch tool {
+        case "Bash":
+            return "🔨"
+        case "Edit", "MultiEdit":
+            return "📝"
+        case "Write":
+            return "💾"
+        case "Read":
+            return "📖"
+        case "Grep", "Glob":
+            return "🔍"
+        case "WebSearch", "WebFetch":
+            return "🌐"
+        case "Task":
+            return "🤖"
+        case "LS":
+            return "📁"
+        default:
+            return "⚙️"
         }
     }
     
