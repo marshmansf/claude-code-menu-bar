@@ -1,6 +1,6 @@
 # Claude Code Monitor
 
-A macOS menu bar application that monitors active Claude Code CLI sessions, providing real-time status updates, notifications when a Claude Code session finishes working and is waiting for you, some basic usage metrics, and quick access to jump to your Claude Code terminal windows.
+A macOS menu bar application that monitors active Claude Code CLI sessions using the Claude Code Hooks feature, providing real-time status updates, notifications when a Claude Code session finishes working and is waiting for you, usage metrics, and quick access to jump to your Claude Code terminal windows.
 
 <img src="assets/screenshot.png" alt="Menu Bar and Sessions View" width="400">
 <img src="assets/screenshot-preferences.png" alt="Preferences View" width="400">
@@ -9,21 +9,23 @@ Naturally, Claude Code did most of the work making this app.
 
 ## Features
 
-### Real-Time Session Monitoring
-- **Live Status Updates**: Shows which Claude sessions are currently working, waiting, or idle
+### Real-Time Session Monitoring (via Claude Code Hooks)
+- **Live Status Updates**: Shows which Claude sessions are currently working, waiting, or idle using Claude Code's hooks feature
 - **Menu Bar Indicators**: Colored circles with counts (🔵 working, 🟠 waiting)
-- **Working State Details**: Displays current operation (e.g., "Analyzing... (42s)")
+- **Working State Details**: Displays current tool being used (e.g., "🔍 Searching files", "✏️ Editing code", "🖥️ Running commands")
 - **Auto-Compaction Tracking**: Shows percentage until context window compaction
+- **Task Description**: Shows the most recent user prompt for each session
+- **Working Directory**: Displays the current project folder prominently
 
-Note that the Claude sessions are named based on the terminal window name.  Claude Code will often update this window name to make sense contextually with the work you are doing, but you can also rename your terminal windows.
+Note that the Claude sessions are named based on the terminal window name. Claude Code will often update this window name to make sense contextually with the work you are doing, but you can also rename your terminal windows.
 
 ### Token Usage & Cost Tracking
 - **Token Counting**: Tracks input and output tokens for each session
 - **Cost Calculation**: Automatic pricing based on detected model (Opus, Sonnet, Haiku)
-- **Manual Refresh**: Click the metrics area to update token counts (I did not automate this because it parses a large JSON file to tally the numbers, and I did not want this running constantly)
-- **Last Updated Display**: Shows when metrics were last fetched
+- **Automatic Updates**: Token counts update automatically when Claude Code sends hook events
+- **Session Matching**: Uses working directory and session ID for accurate JSONL file matching
 
-The token usage and cost tracking has not been vetted and may not be correct yet.  Also, the terminal window name is used to attempt to match against your ~/.claude/projects to find the appropriate JSONL file.  This is not working perfectly yet.  I would be happy to hear of some other more bullet-proof way to tie the Claude terminal session together with the JSONL file.
+The token usage and cost tracking is provided by Claude Code's transcript files and should be accurate for sessions that have transcript data available.
 
 ### Interactive Interface
 - **Click to Focus**: Click any session to bring its terminal window to front
@@ -35,6 +37,12 @@ The token usage and cost tracking has not been vetted and may not be correct yet
 - **Window Height**: Adjustable popover height (300-800px)
 - **Notification Sounds**: Choose from 30+ sound options or disable
 - **Launch at Login**: Start automatically when you log in
+
+### Debug Panel
+- **Raw Hook Events**: View all Claude Code hook events in real-time
+- **Event Filtering**: Filter events by type (tool_use, conversation, etc.)
+- **Live Updates**: See events as they arrive from Claude Code
+- **JSON Inspection**: Expand events to see full JSON payloads
 
 
 
@@ -64,25 +72,28 @@ The token usage and cost tracking has not been vetted and may not be correct yet
 
 1. **Launch**: The app runs in your menu bar (look for the <img src="assets/images/icon-44px.png" alt="Menu Bar App Icon" width="44"> icon)
 2. **View Sessions**: Click the menu bar icon to see active sessions
-3. **Focus Terminal**: Click any session to switch to its terminal window
-4. **Refresh Metrics**: Click the metrics row to update token counts
+3. **Focus Terminal**: Click any session to switch to its terminal window (supports iTerm2, Terminal.app, and tmux)
+4. **View Token Usage**: Token counts update automatically as you work
 5. **Reorder Sessions**: Drag the handle (≡) to reorder sessions
 6. **Access Preferences**: Click the preferences button at the bottom
+7. **Debug Mode**: Toggle debug panel to see raw hook events (useful for troubleshooting)
 
 ## How It Works
 
-The app monitors Claude CLI processes by:
-1. Scanning for `claude` processes using `ps` commands
-2. Extracting terminal content via AppleScript (for iTerm2/Terminal.app)
-3. Parsing working states using regex patterns
-4. Reading JSONL files from `~/.claude/projects/` for token data
-5. Calculating costs based on detected model pricing
+The app monitors Claude CLI sessions using the Claude Code Hooks feature:
+1. Listens on a local HTTP server (port 8124) for hook events from Claude Code
+2. Receives real-time updates about tool usage, conversation events, and status changes
+3. Matches sessions by working directory to handle multiple concurrent sessions
+4. Reads JSONL transcript files from `~/.claude/projects/` for token data
+5. Calculates costs based on detected model pricing
+6. Supports terminal window focusing for iTerm2, Terminal.app, and tmux sessions
 
 ## System Requirements
 
 - macOS 13.0 (Ventura) or later
-- Claude CLI installed and configured
-- iTerm2 or Terminal.app
+- Claude CLI installed and configured (with hooks support)
+- iTerm2, Terminal.app, or tmux
+- Claude Code hooks enabled (the app will guide you through setup if needed)
 
 ## Privacy & Security
 
@@ -91,21 +102,39 @@ The app monitors Claude CLI processes by:
 - **Read-Only**: Only reads Claude's local files, never modifies them
 - **Terminal Access**: Requires accessibility permissions for terminal content
 
+## Claude Code Hooks Setup
+
+The app requires Claude Code hooks to be configured. If hooks are not set up, the app will display setup instructions:
+
+1. Add to your Claude Code settings file (`~/.claude/settings.json`):
+```json
+{
+  "hooks": {
+    "conversation": "http://localhost:8124/hook",
+    "tool_use": "http://localhost:8124/hook"
+  }
+}
+```
+
+2. Restart any active Claude Code sessions for the hooks to take effect
+
 ## Troubleshooting
 
 ### App doesn't show sessions
-- Ensure Claude CLI is running (`claude` command in terminal)
-- Check that the app has accessibility permissions in System Settings
+- Ensure Claude Code hooks are configured (see setup above)
+- Check that Claude CLI is running (`claude` command in terminal)
+- Verify the app is running (look for the icon in menu bar)
+- Check the Debug panel to see if hook events are being received
 
 ### Token counts show zero
-- Click the refresh button to fetch latest data
-- Ensure `~/.claude/` directory is accessible
-- Some sessions may not have token data yet
-- The Claude terminal session name to ~/.claude/projects JSONL file mapping technique is not bullet-proof and needs improvement
+- Token data comes from Claude Code transcript files
+- Some sessions may not have token data immediately
+- Check that `~/.claude/projects/` directory is accessible
 
 ### Can't focus terminal windows
 - Grant accessibility permissions when prompted
-- Ensure using iTerm2 or Terminal.app
+- For tmux sessions, ensure tmux is running in a supported terminal
+- Check that you're using iTerm2, Terminal.app, or tmux
 
 ## Development
 
@@ -113,10 +142,12 @@ The app monitors Claude CLI processes by:
 - **Language**: Swift 5 with SwiftUI
 - **Frameworks**: AppKit, SwiftUI, Cocoa
 - **Key Components**:
-  - `SessionMonitor`: Core monitoring logic
-  - `TerminalContentParser`: Extracts terminal states
+  - `SessionMonitor`: Core monitoring logic with hooks integration
+  - `HookServer`: HTTP server listening for Claude Code hook events
   - `ClaudeFileParser`: Reads JSONL token data
-  - `MenuBarView`: SwiftUI interface
+  - `TranscriptReader`: Parses Claude Code transcript files
+  - `MenuBarView`: SwiftUI interface with drag & drop support
+  - `DebugView`: Real-time hook event viewer
 
 ### Building
 ```bash
