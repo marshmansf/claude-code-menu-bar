@@ -66,7 +66,7 @@ The token usage and cost tracking is provided by Claude Code's transcript files 
 
 ## Usage
 
-1. **Launch**: The app runs in your menu bar (look for the <img src="assets/images/icon-44px.png" alt="Menu Bar App Icon" width="44"> icon)
+1. **Launch**: The app runs in your menu bar (look for the <img src="assets/icon-44px.png" alt="Menu Bar App Icon" width="44"> icon)
 2. **View Sessions**: Click the menu bar icon to see active sessions
 3. **Focus Terminal**: Click any session to switch to its terminal window (supports iTerm2, Terminal.app, and tmux)
 4. **View Token Usage**: Refresh the displayed token count usage
