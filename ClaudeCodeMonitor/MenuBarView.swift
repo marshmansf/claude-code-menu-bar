@@ -1,4 +1,95 @@
 import SwiftUI
+import AppKit
+
+// MARK: - Extensions
+
+extension DateFormatter {
+    static let debugTime: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+}
+
+// MARK: - Debug Drawer
+
+// MARK: - Debug View
+
+struct DebugView: View {
+    @ObservedObject var debugLog: DebugLog
+    @State private var autoScroll = true
+    @State private var selectedText = ""
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text("Debug Log")
+                    .font(.headline)
+                
+                Spacer()
+                
+                Toggle("Auto-scroll", isOn: $autoScroll)
+                    .toggleStyle(.checkbox)
+                
+                Button("Copy All") {
+                    copyAllLogs()
+                }
+                .buttonStyle(.bordered)
+                
+                Button("Clear") {
+                    debugLog.clear()
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding()
+            .background(Color(NSColor.controlBackgroundColor))
+            
+            Divider()
+            
+            // Log content as selectable text
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        let allText = debugLog.entries.map { entry in
+                            let timeFormatter = DateFormatter()
+                            timeFormatter.dateFormat = "h:mm:ss a"
+                            let timeString = timeFormatter.string(from: entry.timestamp)
+                            return "\(timeString) \(entry.message)"
+                        }.joined(separator: "\n")
+                        
+                        Text(allText)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                            .padding()
+                            .id("logContent")
+                    }
+                }
+                .background(Color(NSColor.textBackgroundColor))
+                .onChange(of: debugLog.entries.count) { _ in
+                    if autoScroll {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            proxy.scrollTo("logContent", anchor: .bottom)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private func copyAllLogs() {
+        let allText = debugLog.entries.map { entry in
+            let timeFormatter = DateFormatter()
+            timeFormatter.dateFormat = "h:mm:ss a"
+            let timeString = timeFormatter.string(from: entry.timestamp)
+            return "\(timeString) \(entry.message)"
+        }.joined(separator: "\n")
+        
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(allText, forType: .string)
+    }
+}
 
 struct SessionDropDelegate: DropDelegate {
     let sessions: [Session]
@@ -29,7 +120,10 @@ struct SessionDropDelegate: DropDelegate {
 struct MenuBarView: View {
     @ObservedObject var sessionMonitor: SessionMonitor
     @ObservedObject var preferencesManager = PreferencesManager.shared
+    @ObservedObject var debugLog = DebugLog.shared
     @State private var showingPreferences = false
+    @State private var showingDebug = false
+    @State private var autoScroll = true
     
     var body: some View {
         VStack(spacing: 0) {
@@ -47,13 +141,21 @@ struct MenuBarView: View {
                 sessionListView
             }
             
+            // Debug drawer
+            if showingDebug {
+                debugDrawerView
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .animation(.easeInOut(duration: 0.3), value: showingDebug)
+            }
+            
             Divider()
             
             footerView
                 .padding()
                 .background(Color(NSColor.controlBackgroundColor))
         }
-        .frame(width: 500, height: preferencesManager.windowHeight)
+        .frame(width: 500, height: showingDebug ? preferencesManager.windowHeight + 300 : preferencesManager.windowHeight)
+        .animation(.easeInOut(duration: 0.3), value: showingDebug)
         .sheet(isPresented: $showingPreferences) {
             PreferencesView(onDismiss: {
                 showingPreferences = false
@@ -125,6 +227,9 @@ struct MenuBarView: View {
                             }
                         
                         SessionRowView(session: session, sessionMonitor: sessionMonitor) {
+                            DebugLog.shared.log("Menu bar click detected for session \(session.processID)")
+                            DebugLog.shared.log("Session TTY: \(session.terminalTTY ?? "nil")")
+                            DebugLog.shared.log("Session terminalAppName: \(session.terminalAppName ?? "nil")")
                             sessionMonitor.focusTerminalWindow(for: session)
                         }
                     }
@@ -172,19 +277,108 @@ struct MenuBarView: View {
         .padding()
     }
     
+    private var debugDrawerView: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text("Debug Log")
+                    .font(.headline)
+                    .foregroundColor(.primary)
+                
+                Spacer()
+                
+                Toggle("Auto-scroll", isOn: $autoScroll)
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+                
+                Button("Clear") {
+                    debugLog.clear()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                
+                Button("Close") {
+                    showingDebug = false
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            .background(Color(NSColor.controlBackgroundColor))
+            
+            Divider()
+            
+            // Log content
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(debugLog.entries) { entry in
+                            HStack(alignment: .top, spacing: 8) {
+                                Text(DateFormatter.debugTime.string(from: entry.timestamp))
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 60, alignment: .leading)
+                                
+                                Text(entry.message)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundColor(entry.color)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 1)
+                        }
+                    }
+                    .id("logContent")
+                }
+                .frame(height: 280)
+                .background(Color(NSColor.textBackgroundColor))
+                .onChange(of: debugLog.entries.count) { _ in
+                    if autoScroll {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            proxy.scrollTo("logContent", anchor: .bottom)
+                        }
+                    }
+                }
+            }
+        }
+        .background(Color(NSColor.windowBackgroundColor))
+    }
+    
     private var footerView: some View {
         HStack {
-            Button("Preferences") {
-                showingPreferences = true
+            Button(action: { showingPreferences = true }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "gear")
+                        .font(.caption)
+                    Text("Preferences")
+                }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            
+            Button(action: { showingDebug.toggle() }) {
+                HStack(spacing: 4) {
+                    Image(systemName: showingDebug ? "chevron.down" : "chevron.up")
+                        .font(.caption)
+                    Text("Debug")
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
             
             Spacer()
             
-            Button("Quit") {
-                NSApplication.shared.terminate(nil)
+            Button(action: { NSApplication.shared.terminate(nil) }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "power")
+                        .font(.caption)
+                    Text("Quit")
+                }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
             .foregroundColor(.red)
         }
     }
