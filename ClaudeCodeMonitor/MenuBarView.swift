@@ -424,24 +424,43 @@ struct SessionRowView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            // Show working directory first if available
+                            // Working directory with tool status on same line
                             if let workingDir = session.workingDirectory {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "folder")
-                                        .font(.system(.caption2))
-                                        .foregroundColor(.secondary)
-                                    Text(URL(fileURLWithPath: workingDir).lastPathComponent)
-                                        .font(.system(.callout))
-                                        .foregroundColor(.secondary)
-                                        .lineLimit(1)
+                                HStack {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "folder")
+                                            .font(.system(.caption2))
+                                            .foregroundColor(.secondary)
+                                        Text(URL(fileURLWithPath: workingDir).lastPathComponent)
+                                            .font(.system(.body))
+                                            .fontWeight(.bold)
+                                            .foregroundColor(.black)
+                                            .lineLimit(1)
+                                    }
+                                    .help("Working directory: \(workingDir)")
+                                    
+                                    Spacer()
+                                    
+                                    HStack(spacing: 4) {
+                                        if session.isWorking, let tool = session.currentTool {
+                                            Text(session.toolIcon(for: tool))
+                                                .font(.caption)
+                                        }
+                                        Text(session.statusDescription)
+                                            .font(.caption)
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 2)
+                                    .background(statusBackgroundColor)
+                                    .foregroundColor(statusForegroundColor)
+                                    .cornerRadius(4)
+                                    .help(toolHelpText)
                                 }
-                                .help("Working directory: \(workingDir)")
                             }
                             
                             Text(session.taskDescription ?? session.projectName ?? "Claude Session")
-                                .font(.system(.body))
-                                .fontWeight(.medium)
-                                .lineLimit(1)
+                                .font(.system(.callout))
+                                .lineLimit(2)
                                 .help(session.taskDescription ?? session.workingDirectory ?? "Working directory unknown")
                             
                             HStack(spacing: 16) {
@@ -465,21 +484,6 @@ struct SessionRowView: View {
                         }
                         
                         Spacer()
-                        
-                        HStack(spacing: 4) {
-                            if session.isWorking, let tool = session.currentTool {
-                                Text(session.toolIcon(for: tool))
-                                    .font(.caption)
-                            }
-                            Text(session.statusDescription)
-                                .font(.caption)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background(statusBackgroundColor)
-                        .foregroundColor(statusForegroundColor)
-                        .cornerRadius(4)
-                        .help(toolHelpText)
                     }
                     
                     Button(action: {
